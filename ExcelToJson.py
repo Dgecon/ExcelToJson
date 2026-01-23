@@ -13,6 +13,7 @@ from screeninfo import get_monitors
 ask_window = None
 current_file_path = None
 text_widget = None
+line_numbers_widget = None  # Виджет для номеров строк
 status_label = None
 editor_win = None
 converter_win = None
@@ -90,9 +91,15 @@ def apply_theme(window, is_dark):
                 pass
         elif widget_type == "Text":
             try:
-                # Не применяем к Text, если он уже настроен вручную
+                # Проверяем, является ли это виджетом номеров строк
                 current_bg = widget.cget("bg")
-                if current_bg in ["white", "#1e1e1e"]:
+                if current_bg in ["#252526", "#f0f0f0"]:
+                    # Это виджет номеров строк
+                    line_num_bg = "#252526" if is_dark else "#f0f0f0"
+                    line_num_fg = "#858585" if is_dark else "#666666"
+                    widget.configure(bg=line_num_bg, fg=line_num_fg)
+                elif current_bg in ["white", "#1e1e1e"]:
+                    # Это обычное текстовое поле
                     widget.configure(bg=text_bg, fg=text_fg, insertbackground=fg_color)
             except:
                 pass
@@ -108,6 +115,19 @@ def apply_theme(window, is_dark):
                                activeforeground=button_fg,
                                relief=RAISED,
                                borderwidth=1)
+            except:
+                pass
+        elif widget_type == "Checkbutton":
+            try:
+                # Для темной темы: темный фон, белый текст, темный цвет галочки
+                # Для светлой темы: светлый фон, черный текст, белый цвет галочки
+                checkbox_bg = frame_bg
+                checkbox_fg = fg_color
+                checkbox_selectcolor = "#3c3c3c" if is_dark else "white"
+                widget.configure(bg=checkbox_bg, fg=checkbox_fg,
+                               activebackground=checkbox_bg,
+                               activeforeground=checkbox_fg,
+                               selectcolor=checkbox_selectcolor)
             except:
                 pass
         
@@ -568,6 +588,8 @@ def load_file_into_editor(filepath, editor):
         editor.delete('1.0', END)
         editor.insert('1.0', content)
         current_file_path = filepath
+        update_line_numbers()  # Обновляем номера строк
+        highlight_json_syntax()  # Подсвечиваем синтаксис
         validate_json(editor)
     except Exception as e:
         messagebox.showerror("Ошибка", f"Не удалось загрузить файл:\n{e}")
@@ -650,8 +672,191 @@ def save_json():
     except Exception as e:
         messagebox.showerror("Ошибка", f"Не удалось сохранить файл:\n{e}")
 
+def update_line_numbers():
+    """Обновляет номера строк в редакторе"""
+    global text_widget, line_numbers_widget
+    if not text_widget or not line_numbers_widget:
+        return
+    
+    try:
+        # Получаем количество строк через индекс последней строки
+        last_line = text_widget.index('end-1c').split('.')[0]
+        line_count = int(last_line)
+        
+        # Формируем текст с номерами строк
+        line_numbers = '\n'.join(str(i) for i in range(1, line_count + 1))
+        if line_count == 0:
+            line_numbers = '1'
+        
+        # Обновляем виджет номеров строк
+        line_numbers_widget.config(state=NORMAL)
+        line_numbers_widget.delete('1.0', END)
+        line_numbers_widget.insert('1.0', line_numbers)
+        line_numbers_widget.config(state=DISABLED)
+    except Exception:
+        # В случае ошибки просто игнорируем
+        pass
+
+def on_text_change(event=None):
+    """Обработчик изменения текста - обновляет номера строк и подсветку"""
+    update_line_numbers()
+    # Вызываем подсветку с небольшой задержкой, чтобы не замедлять ввод
+    try:
+        global editor_win
+        if editor_win:
+            editor_win.after(10, highlight_json_syntax)
+    except:
+        pass
+
+def sync_scroll(*args):
+    """Синхронизирует прокрутку между текстовым полем и номерами строк"""
+    global text_widget, line_numbers_widget
+    if text_widget and line_numbers_widget:
+        line_numbers_widget.yview_moveto(args[0])
+
+def sync_line_numbers_scroll(*args):
+    """Синхронизирует прокрутку номеров строк с текстовым полем"""
+    global text_widget, line_numbers_widget
+    if text_widget and line_numbers_widget:
+        text_widget.yview_moveto(args[0])
+
+def toggle_word_wrap():
+    """Переключает перенос строк"""
+    global text_widget, word_wrap_var
+    if not text_widget:
+        return
+    
+    if word_wrap_var.get():
+        text_widget.config(wrap=WORD)
+    else:
+        text_widget.config(wrap=NONE)
+    update_line_numbers()
+
+def highlight_json_syntax():
+    """Подсвечивает синтаксис JSON как в Notepad++"""
+    global text_widget, dark_theme_enabled
+    if not text_widget:
+        return
+    
+    import re
+    
+    # Удаляем все предыдущие теги подсветки
+    text_widget.tag_remove("json_key", "1.0", END)
+    text_widget.tag_remove("json_string", "1.0", END)
+    text_widget.tag_remove("json_number", "1.0", END)
+    text_widget.tag_remove("json_boolean", "1.0", END)
+    text_widget.tag_remove("json_null", "1.0", END)
+    text_widget.tag_remove("json_bracket", "1.0", END)
+    text_widget.tag_remove("json_colon", "1.0", END)
+    text_widget.tag_remove("json_comma", "1.0", END)
+    
+    # Получаем весь текст
+    content = text_widget.get("1.0", END)
+    if not content.strip():
+        return
+    
+    # Цвета для темной и светлой темы
+    if dark_theme_enabled:
+        key_color = "#9cdcfe"      # Светло-голубой для ключей
+        string_color = "#ce9178"   # Оранжево-коричневый для строк
+        number_color = "#b5cea8"   # Зеленый для чисел
+        boolean_color = "#569cd6"   # Синий для булевых значений
+        null_color = "#569cd6"      # Синий для null
+        bracket_color = "#ffd700"  # Золотой для скобок
+        colon_color = "#d4d4d4"    # Светло-серый для двоеточий
+        comma_color = "#d4d4d4"    # Светло-серый для запятых
+    else:
+        key_color = "#0451a5"      # Темно-синий для ключей
+        string_color = "#a31515"   # Темно-красный для строк
+        number_color = "#098658"   # Зеленый для чисел
+        boolean_color = "#0000ff"  # Синий для булевых значений
+        null_color = "#0000ff"     # Синий для null
+        bracket_color = "#811f3f"  # Темно-красный для скобок
+        colon_color = "#000000"    # Черный для двоеточий
+        comma_color = "#000000"    # Черный для запятых
+    
+    # Настраиваем теги с цветами
+    text_widget.tag_configure("json_key", foreground=key_color)
+    text_widget.tag_configure("json_string", foreground=string_color)
+    text_widget.tag_configure("json_number", foreground=number_color)
+    text_widget.tag_configure("json_boolean", foreground=boolean_color)
+    text_widget.tag_configure("json_null", foreground=null_color)
+    text_widget.tag_configure("json_bracket", foreground=bracket_color, font=("Consolas", 10, "bold"))
+    text_widget.tag_configure("json_colon", foreground=colon_color)
+    text_widget.tag_configure("json_comma", foreground=comma_color)
+    
+    # Подсветка скобок и фигурных скобок
+    for match in re.finditer(r'[\[\]{}]', content):
+        start_pos = f"1.0 + {match.start()} chars"
+        end_pos = f"1.0 + {match.end()} chars"
+        text_widget.tag_add("json_bracket", start_pos, end_pos)
+    
+    # Подсветка двоеточий
+    for match in re.finditer(r':', content):
+        start_pos = f"1.0 + {match.start()} chars"
+        end_pos = f"1.0 + {match.end()} chars"
+        text_widget.tag_add("json_colon", start_pos, end_pos)
+    
+    # Подсветка запятых
+    for match in re.finditer(r',', content):
+        start_pos = f"1.0 + {match.start()} chars"
+        end_pos = f"1.0 + {match.end()} chars"
+        text_widget.tag_add("json_comma", start_pos, end_pos)
+    
+    # Подсветка строк (включая ключи и значения)
+    # Ищем строки в кавычках, но нужно различать ключи и значения
+    string_pattern = r'"(?:[^"\\]|\\.)*"'
+    for match in re.finditer(string_pattern, content):
+        start_pos = f"1.0 + {match.start()} chars"
+        end_pos = f"1.0 + {match.end()} chars"
+        # Проверяем, является ли это ключом (есть двоеточие после, возможно с пробелами)
+        match_end = match.end()
+        remaining = content[match_end:match_end+10].strip() if match_end < len(content) else ""
+        if remaining.startswith(':'):
+            text_widget.tag_add("json_key", start_pos, end_pos)
+        else:
+            text_widget.tag_add("json_string", start_pos, end_pos)
+    
+    # Подсветка чисел (целые и с плавающей точкой)
+    number_pattern = r'-?\d+\.?\d*'
+    for match in re.finditer(number_pattern, content):
+        start_pos = f"1.0 + {match.start()} chars"
+        end_pos = f"1.0 + {match.end()} chars"
+        # Проверяем, что это не часть строки
+        line_start = content.rfind('\n', 0, match.start())
+        if line_start == -1:
+            line_start = 0
+        line_content = content[line_start:match.end()]
+        # Если число не внутри строки
+        if line_content.count('"') % 2 == 0 or (line_content.rfind('"', 0, match.start() - line_start) == -1):
+            text_widget.tag_add("json_number", start_pos, end_pos)
+    
+    # Подсветка булевых значений
+    for match in re.finditer(r'\b(true|false)\b', content, re.IGNORECASE):
+        start_pos = f"1.0 + {match.start()} chars"
+        end_pos = f"1.0 + {match.end()} chars"
+        # Проверяем, что это не часть строки
+        line_start = content.rfind('\n', 0, match.start())
+        if line_start == -1:
+            line_start = 0
+        line_content = content[line_start:match.end()]
+        if line_content.count('"') % 2 == 0:
+            text_widget.tag_add("json_boolean", start_pos, end_pos)
+    
+    # Подсветка null
+    for match in re.finditer(r'\bnull\b', content, re.IGNORECASE):
+        start_pos = f"1.0 + {match.start()} chars"
+        end_pos = f"1.0 + {match.end()} chars"
+        # Проверяем, что это не часть строки
+        line_start = content.rfind('\n', 0, match.start())
+        if line_start == -1:
+            line_start = 0
+        line_content = content[line_start:match.end()]
+        if line_content.count('"') % 2 == 0:
+            text_widget.tag_add("json_null", start_pos, end_pos)
+
 def create_json_editor_window():
-    global ask_window, text_widget, status_label, editor_win, dark_theme_enabled
+    global ask_window, text_widget, line_numbers_widget, status_label, editor_win, dark_theme_enabled, word_wrap_var
     
     if ask_window:
         ask_window.destroy()
@@ -659,7 +864,7 @@ def create_json_editor_window():
 
     editor_win = Tk()
     editor_win.title("JSON Редактор с проверкой")
-    place_window_near_cursor(editor_win, 600, 500, 0, 0, 200)
+    place_window_near_cursor(editor_win, 700, 550, 0, 0, 200)
 
     # Статусная строка
     status_bg = "#404040" if dark_theme_enabled else "white"
@@ -668,31 +873,76 @@ def create_json_editor_window():
                         bg=status_bg, fg=status_fg)
     status_label.pack(side=BOTTOM, fill=X)
 
-    # Кнопки
+    # Кнопки и чекбокс переноса строк
     btn_frame = Frame(editor_win)
     btn_frame.pack(side=TOP, fill=X, padx=10, pady=5)
 
     Button(btn_frame, text="Открыть файл", command=select_json_for_edit).pack(side=LEFT, padx=5)
     Button(btn_frame, text="Проверить", command=lambda: validate_json(text_widget)).pack(side=LEFT, padx=5)
     Button(btn_frame, text="Сохранить", command=save_json).pack(side=LEFT, padx=5)
+    
+    # Чекбокс для переноса строк
+    word_wrap_var = BooleanVar(value=False)
+    Checkbutton(btn_frame, text="Перенос строк", variable=word_wrap_var, 
+                command=toggle_word_wrap).pack(side=LEFT, padx=5)
+    
     Button(btn_frame, text="Справка", command=show_help).pack(side=RIGHT, padx=5)
     Button(btn_frame, text="Назад", command=lambda: go_back_to_main(editor_win)).pack(side=RIGHT, padx=5)
 
-    # Текстовое поле с прокруткой
+    # Фрейм для текстового поля с номерами строк
     text_frame = Frame(editor_win)
     text_frame.pack(fill=BOTH, expand=True, padx=5, pady=5)
 
+    # Фрейм для номеров строк и текстового поля
+    editor_frame = Frame(text_frame)
+    editor_frame.pack(side=LEFT, fill=BOTH, expand=True)
+
     text_bg = "#1e1e1e" if dark_theme_enabled else "white"
     text_fg = "#ffffff" if dark_theme_enabled else "black"
-    text_widget = Text(text_frame, wrap=NONE, font=("Consolas", 10), undo=True,
-                      bg=text_bg, fg=text_fg, insertbackground=text_fg)
-    scroll_y = Scrollbar(text_frame, orient=VERTICAL, command=text_widget.yview)
-    scroll_x = Scrollbar(text_frame, orient=HORIZONTAL, command=text_widget.xview)
-    text_widget.config(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
-
+    line_num_bg = "#252526" if dark_theme_enabled else "#f0f0f0"
+    line_num_fg = "#858585" if dark_theme_enabled else "#666666"
+    
+    # Виджет для номеров строк
+    line_numbers_widget = Text(editor_frame, width=5, padx=5, pady=5, 
+                              font=("Consolas", 10), bg=line_num_bg, fg=line_num_fg,
+                              state=DISABLED, wrap=NONE, takefocus=0)
+    line_numbers_widget.pack(side=LEFT, fill=Y)
+    
+    # Текстовое поле с прокруткой
+    text_widget = Text(editor_frame, wrap=NONE, font=("Consolas", 10), undo=True,
+                      bg=text_bg, fg=text_fg, insertbackground=text_fg,
+                      padx=5, pady=5)
+    
+    # Вертикальная прокрутка
+    scroll_y = Scrollbar(text_frame, orient=VERTICAL)
     scroll_y.pack(side=RIGHT, fill=Y)
+    
+    # Горизонтальная прокрутка
+    scroll_x = Scrollbar(text_frame, orient=HORIZONTAL)
     scroll_x.pack(side=BOTTOM, fill=X)
+    
+    # Настройка прокрутки
+    text_widget.config(yscrollcommand=lambda *args: [scroll_y.set(*args), sync_scroll(*args)])
+    text_widget.config(xscrollcommand=scroll_x.set)
+    scroll_y.config(command=lambda *args: [text_widget.yview(*args), sync_line_numbers_scroll(*args)])
+    scroll_x.config(command=text_widget.xview)
+    
+    # Синхронизация прокрутки номеров строк
+    line_numbers_widget.config(yscrollcommand=lambda *args: [scroll_y.set(*args), sync_line_numbers_scroll(*args)])
+    
     text_widget.pack(side=LEFT, fill=BOTH, expand=True)
+
+    # Привязка событий для обновления номеров строк
+    text_widget.bind('<KeyRelease>', on_text_change)
+    text_widget.bind('<Button-1>', on_text_change)
+    text_widget.bind('<Return>', on_text_change)
+    text_widget.bind('<BackSpace>', on_text_change)
+    text_widget.bind('<Delete>', on_text_change)
+    text_widget.bind('<Button-4>', on_text_change)
+    text_widget.bind('<Button-5>', on_text_change)
+    
+    # Инициализация номеров строк
+    update_line_numbers()
 
     # Тег для ошибок (адаптируем под тему)
     error_bg = "#8b0000" if dark_theme_enabled else "yellow"
@@ -701,6 +951,9 @@ def create_json_editor_window():
     
     # Применяем тему после создания всех виджетов
     apply_theme(editor_win, dark_theme_enabled)
+    
+    # Инициализируем подсветку синтаксиса
+    highlight_json_syntax()
     
     # Горячие клавиши
     editor_win.bind('<Control-o>', lambda e: select_json_for_edit())

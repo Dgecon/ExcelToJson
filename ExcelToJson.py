@@ -7,6 +7,7 @@ from datetime import datetime
 import pandas as pd
 import subprocess
 import platform
+from screeninfo import get_monitors
 
 # Глобальные переменные
 ask_window = None
@@ -15,25 +16,138 @@ text_widget = None
 status_label = None
 editor_win = None
 converter_win = None
+dark_theme_enabled = False  # Глобальная переменная для темы
 
+
+def get_windows_theme():
+    """Определяет тему Windows (светлая/темная)"""
+    if platform.system() != 'Windows':
+        return False  # По умолчанию светлая тема для не-Windows
+    
+    try:
+        import winreg
+        # Путь к реестру Windows для темы
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        )
+        # AppsUseLightTheme: 0 = темная тема, 1 = светлая тема
+        value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        winreg.CloseKey(key)
+        return value == 0  # True если темная тема
+    except Exception:
+        return False  # По умолчанию светлая тема при ошибке
+
+def apply_theme(window, is_dark):
+    """Применяет тему к окну и всем его виджетам"""
+    if is_dark:
+        bg_color = "#2b2b2b"
+        fg_color = "#ffffff"
+        entry_bg = "#3c3c3c"
+        entry_fg = "#ffffff"
+        status_bg = "#404040"
+        text_bg = "#1e1e1e"
+        text_fg = "#ffffff"
+        frame_bg = "#2b2b2b"
+        button_bg = "#3c3c3c"
+        button_fg = "#ffffff"
+        button_active_bg = "#4a4a4a"
+    else:
+        bg_color = "#f9f9f9"
+        fg_color = "#000000"
+        entry_bg = "white"
+        entry_fg = "black"
+        status_bg = "white"
+        text_bg = "white"
+        text_fg = "black"
+        frame_bg = "#f9f9f9"
+        button_bg = "#e0e0e0"
+        button_fg = "#000000"
+        button_active_bg = "#d0d0d0"
+    
+    # Применяем к окну
+    window.configure(bg=bg_color)
+    
+    # Рекурсивно применяем ко всем виджетам
+    def apply_to_widgets(widget):
+        widget_type = widget.winfo_class()
+        
+        if widget_type == "Label":
+            try:
+                # Проверяем, не является ли это статусной меткой (имеет relief=SUNKEN)
+                relief = widget.cget("relief")
+                if relief == "sunken":
+                    # Это статусная метка - используем специальный цвет
+                    widget.configure(bg=status_bg, fg=fg_color)
+                else:
+                    widget.configure(bg=bg_color, fg=fg_color)
+            except:
+                pass
+        elif widget_type == "Frame":
+            try:
+                widget.configure(bg=frame_bg)
+            except:
+                pass
+        elif widget_type == "Text":
+            try:
+                # Не применяем к Text, если он уже настроен вручную
+                current_bg = widget.cget("bg")
+                if current_bg in ["white", "#1e1e1e"]:
+                    widget.configure(bg=text_bg, fg=text_fg, insertbackground=fg_color)
+            except:
+                pass
+        elif widget_type == "Entry":
+            try:
+                widget.configure(bg=entry_bg, fg=entry_fg, insertbackground=fg_color)
+            except:
+                pass
+        elif widget_type == "Button":
+            try:
+                widget.configure(bg=button_bg, fg=button_fg, 
+                               activebackground=button_active_bg, 
+                               activeforeground=button_fg,
+                               relief=RAISED,
+                               borderwidth=1)
+            except:
+                pass
+        
+        # Рекурсивно обрабатываем дочерние виджеты
+        for child in widget.winfo_children():
+            apply_to_widgets(child)
+    
+    apply_to_widgets(window)
 
 def place_window_near_cursor(window, width, height, dx=0, dy=0, screen_margin=20):
+    # Получаем координаты курсора
     x, y = window.winfo_pointerxy()
-    screen_width = window.winfo_screenwidth()
-    screen_height = window.winfo_screenheight()
 
+    # Находим монитор, на котором находится курсор
+    target_monitor = None
+    for monitor in get_monitors():
+        if monitor.x <= x <= monitor.x + monitor.width and \
+           monitor.y <= y <= monitor.y + monitor.height:
+            target_monitor = monitor
+            break
+
+    # Если не нашли — используем первый монитор как fallback
+    if not target_monitor:
+        target_monitor = get_monitors()[0]
+
+    # Вычисляем позицию окна относительно курсора
     win_x = x + dx
     win_y = y + dy
 
-    if win_x + width > screen_width - screen_margin:
-        win_x = screen_width - width - screen_margin
-    if win_y + height > screen_height - screen_margin:
-        win_y = screen_height - height - screen_margin
-    if win_x < screen_margin:
-        win_x = screen_margin
-    if win_y < screen_margin:
-        win_y = screen_margin
+    # Ограничиваем позицию в пределах монитора с учётом отступов
+    left_bound = target_monitor.x + screen_margin
+    right_bound = target_monitor.x + target_monitor.width - width - screen_margin
+    top_bound = target_monitor.y + screen_margin
+    bottom_bound = target_monitor.y + target_monitor.height - height - screen_margin
 
+    # Применяем ограничения
+    win_x = max(left_bound, min(win_x, right_bound))
+    win_y = max(top_bound, min(win_y, bottom_bound))
+
+    # Устанавливаем геометрию окна
     window.geometry(f"{width}x{height}+{win_x}+{win_y}")
 
 def copy_to_clipboard(text):
@@ -206,7 +320,7 @@ def select_excel_file():
 
 def start_xls2json_win():
     """Создает окно конвертации Excel в JSON"""
-    global ask_window, converter_win, status_label
+    global ask_window, converter_win, status_label, dark_theme_enabled
     
     if ask_window:
         ask_window.destroy()
@@ -214,32 +328,36 @@ def start_xls2json_win():
     
     converter_win = Tk()
     converter_win.title("Конвертация Excel → JSON")
-    converter_win.configure(bg="#f9f9f9")
     converter_win.resizable(False, False)
     place_window_near_cursor(converter_win, 450, 220, 0, 0, 200)
     
     Label(converter_win, text="Конвертация Excel в JSON", 
-          font=("Segoe UI", 12, "bold"), bg="#f9f9f9").pack(pady=15)
+          font=("Segoe UI", 12, "bold")).pack(pady=15)
     
     # Поле статуса (Jobizdan)
+    status_bg = "#404040" if dark_theme_enabled else "white"
+    status_fg = "#ffffff" if dark_theme_enabled else "gray"
     status_label = Label(converter_win, text="Готов к конвертации", 
-                        relief=SUNKEN, anchor=W, bg="white", fg="gray", 
+                        relief=SUNKEN, anchor=W, bg=status_bg, fg=status_fg, 
                         font=("Segoe UI", 9))
     status_label.pack(fill=X, padx=10, pady=5)
     
-    btn_frame = Frame(converter_win, bg="#f9f9f9")
+    btn_frame = Frame(converter_win)
     btn_frame.pack(pady=10)
     
-    ttk.Button(btn_frame, text="Выбрать файл и конвертировать", 
-               command=select_excel_file, width=35).pack(pady=5)
+    Button(btn_frame, text="Выбрать файл и конвертировать", 
+           command=select_excel_file, width=35).pack(pady=5)
     
-    btn_frame2 = Frame(converter_win, bg="#f9f9f9")
+    btn_frame2 = Frame(converter_win)
     btn_frame2.pack(pady=5)
     
-    ttk.Button(btn_frame2, text="Справка", 
-               command=show_help, width=15).pack(side=LEFT, padx=5)
-    ttk.Button(btn_frame2, text="Назад", 
-               command=lambda: go_back_to_main(converter_win), width=15).pack(side=LEFT, padx=5)
+    Button(btn_frame2, text="Справка", 
+           command=show_help, width=15).pack(side=LEFT, padx=5)
+    Button(btn_frame2, text="Назад", 
+           command=lambda: go_back_to_main(converter_win), width=15).pack(side=LEFT, padx=5)
+    
+    # Применяем тему после создания всех виджетов
+    apply_theme(converter_win, dark_theme_enabled)
     
     # Горячая клавиша для выбора файла
     converter_win.bind('<Control-o>', lambda e: select_excel_file())
@@ -249,9 +367,9 @@ def start_xls2json_win():
 
 def show_help():
     """Открывает окно со справкой"""
+    global dark_theme_enabled
     help_window = Toplevel()
     help_window.title("Справка")
-    help_window.configure(bg="#f9f9f9")
     help_window.resizable(True, True)
     help_window.geometry("700x600")
     
@@ -262,8 +380,11 @@ def show_help():
     scrollbar = Scrollbar(text_frame)
     scrollbar.pack(side=RIGHT, fill=Y)
     
+    text_bg = "#1e1e1e" if dark_theme_enabled else "white"
+    text_fg = "#ffffff" if dark_theme_enabled else "black"
     help_text = Text(text_frame, wrap=WORD, font=("Segoe UI", 10), 
-                     yscrollcommand=scrollbar.set, bg="white", padx=10, pady=10)
+                     yscrollcommand=scrollbar.set, bg=text_bg, fg=text_fg,
+                     padx=10, pady=10, insertbackground=text_fg)
     scrollbar.config(command=help_text.yview)
     help_text.pack(side=LEFT, fill=BOTH, expand=True)
     
@@ -388,10 +509,6 @@ def show_help():
   • Убедитесь, что все кавычки закрыты
   • Проверьте запятые между элементами
 
-Проблема: "Не удалось скопировать в буфер обмена"
-  • Установите pyperclip: pip install pyperclip
-  • Или скопируйте JSON вручную из сохраненного файла
-
 ═══════════════════════════════════════════════════════════════
 
 Версия: 1.0
@@ -403,9 +520,12 @@ def show_help():
     help_text.config(state=DISABLED)  # Только для чтения
     
     # Кнопка закрытия
-    btn_frame = Frame(help_window, bg="#f9f9f9")
+    btn_frame = Frame(help_window)
     btn_frame.pack(pady=10)
-    ttk.Button(btn_frame, text="Закрыть", command=help_window.destroy, width=20).pack()
+    Button(btn_frame, text="Закрыть", command=help_window.destroy, width=20).pack()
+    
+    # Применяем тему после создания всех виджетов
+    apply_theme(help_window, dark_theme_enabled)
 
 def go_back_to_main(current_window):
     """Возвращает к главному окну"""
@@ -416,10 +536,12 @@ def go_back_to_main(current_window):
 
 # === НОВАЯ ФУНКЦИЯ: JSON РЕДАКТОР С ПОДСВЕТКОЙ ОШИБОК ===
 def validate_json(editor):
+    global dark_theme_enabled
     editor.tag_remove('error', '1.0', END)
     content = editor.get('1.0', END).strip()
     if not content:
-        status_label.config(text="Файл пуст", fg="gray")
+        status_fg = "#cccccc" if dark_theme_enabled else "gray"
+        status_label.config(text="Файл пуст", fg=status_fg)
         return
 
     try:
@@ -430,7 +552,10 @@ def validate_json(editor):
         start = f"{error_line}.0"
         end = f"{error_line}.end"
         editor.tag_add('error', start, end)
-        editor.tag_config('error', background="yellow", foreground="red")
+        # Обновляем тег ошибки с учетом темы
+        error_bg = "#8b0000" if dark_theme_enabled else "yellow"
+        error_fg = "#ffcccc" if dark_theme_enabled else "red"
+        editor.tag_config('error', background=error_bg, foreground=error_fg)
         status_label.config(text=f"❌ Ошибка в строке {e.lineno}: {e.msg}", fg="red")
     except Exception as ex:
         status_label.config(text=f"⚠️ Ошибка: {ex}", fg="orange")
@@ -526,7 +651,7 @@ def save_json():
         messagebox.showerror("Ошибка", f"Не удалось сохранить файл:\n{e}")
 
 def create_json_editor_window():
-    global ask_window, text_widget, status_label, editor_win
+    global ask_window, text_widget, status_label, editor_win, dark_theme_enabled
     
     if ask_window:
         ask_window.destroy()
@@ -534,28 +659,33 @@ def create_json_editor_window():
 
     editor_win = Tk()
     editor_win.title("JSON Редактор с проверкой")
-    editor_win.configure(bg="#f9f9f9")
     place_window_near_cursor(editor_win, 600, 500, 0, 0, 200)
 
     # Статусная строка
-    status_label = Label(editor_win, text="Загрузите JSON-файл", relief=SUNKEN, anchor=W, bg="white")
+    status_bg = "#404040" if dark_theme_enabled else "white"
+    status_fg = "#ffffff" if dark_theme_enabled else "black"
+    status_label = Label(editor_win, text="Загрузите JSON-файл", relief=SUNKEN, anchor=W, 
+                        bg=status_bg, fg=status_fg)
     status_label.pack(side=BOTTOM, fill=X)
 
     # Кнопки
-    btn_frame = Frame(editor_win, bg="#f9f9f9")
+    btn_frame = Frame(editor_win)
     btn_frame.pack(side=TOP, fill=X, padx=10, pady=5)
 
-    ttk.Button(btn_frame, text="Открыть файл", command=select_json_for_edit).pack(side=LEFT, padx=5)
-    ttk.Button(btn_frame, text="Проверить", command=lambda: validate_json(text_widget)).pack(side=LEFT, padx=5)
-    ttk.Button(btn_frame, text="Сохранить", command=save_json).pack(side=LEFT, padx=5)
-    ttk.Button(btn_frame, text="Справка", command=show_help).pack(side=RIGHT, padx=5)
-    ttk.Button(btn_frame, text="Назад", command=lambda: go_back_to_main(editor_win)).pack(side=RIGHT, padx=5)
+    Button(btn_frame, text="Открыть файл", command=select_json_for_edit).pack(side=LEFT, padx=5)
+    Button(btn_frame, text="Проверить", command=lambda: validate_json(text_widget)).pack(side=LEFT, padx=5)
+    Button(btn_frame, text="Сохранить", command=save_json).pack(side=LEFT, padx=5)
+    Button(btn_frame, text="Справка", command=show_help).pack(side=RIGHT, padx=5)
+    Button(btn_frame, text="Назад", command=lambda: go_back_to_main(editor_win)).pack(side=RIGHT, padx=5)
 
     # Текстовое поле с прокруткой
     text_frame = Frame(editor_win)
     text_frame.pack(fill=BOTH, expand=True, padx=5, pady=5)
 
-    text_widget = Text(text_frame, wrap=NONE, font=("Consolas", 10), undo=True)
+    text_bg = "#1e1e1e" if dark_theme_enabled else "white"
+    text_fg = "#ffffff" if dark_theme_enabled else "black"
+    text_widget = Text(text_frame, wrap=NONE, font=("Consolas", 10), undo=True,
+                      bg=text_bg, fg=text_fg, insertbackground=text_fg)
     scroll_y = Scrollbar(text_frame, orient=VERTICAL, command=text_widget.yview)
     scroll_x = Scrollbar(text_frame, orient=HORIZONTAL, command=text_widget.xview)
     text_widget.config(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
@@ -564,8 +694,13 @@ def create_json_editor_window():
     scroll_x.pack(side=BOTTOM, fill=X)
     text_widget.pack(side=LEFT, fill=BOTH, expand=True)
 
-    # Тег для ошибок
-    text_widget.tag_configure('error', background="yellow", foreground="red")
+    # Тег для ошибок (адаптируем под тему)
+    error_bg = "#8b0000" if dark_theme_enabled else "yellow"
+    error_fg = "#ffcccc" if dark_theme_enabled else "red"
+    text_widget.tag_configure('error', background=error_bg, foreground=error_fg)
+    
+    # Применяем тему после создания всех виджетов
+    apply_theme(editor_win, dark_theme_enabled)
     
     # Горячие клавиши
     editor_win.bind('<Control-o>', lambda e: select_json_for_edit())
@@ -576,7 +711,7 @@ def create_json_editor_window():
 
 # === ОСНОВНОЕ МЕНЮ ===
 def create_ask_window():
-    global ask_window, editor_win, converter_win
+    global ask_window, editor_win, converter_win, dark_theme_enabled
     
     # Закрываем другие окна если они открыты
     if editor_win:
@@ -593,24 +728,47 @@ def create_ask_window():
             pass
         converter_win = None
     
+    # Определяем тему Windows при первом запуске
+    if dark_theme_enabled is False and not hasattr(create_ask_window, 'theme_checked'):
+        dark_theme_enabled = get_windows_theme()
+        create_ask_window.theme_checked = True
+    
     ask_window = Tk()
     ask_window.title("XLSX/JSON Helper")
-    ask_window.configure(bg="#f9f9f9")
     ask_window.resizable(False, False)
-    place_window_near_cursor(ask_window, 350, 180, 0, 0, 250)
+    place_window_near_cursor(ask_window, 350, 200, 0, 0, 250)
 
     Label(ask_window, text="Что вы хотите сделать?", 
-          font=("Segoe UI", 12, "bold"), bg="#f9f9f9").pack(pady=15)
+          font=("Segoe UI", 12, "bold")).pack(pady=15)
     
-    btn_frame = Frame(ask_window, bg="#f9f9f9")
+    btn_frame = Frame(ask_window)
     btn_frame.pack(pady=10)
     
-    ttk.Button(btn_frame, text="Конвертировать *.xlsx/*.xlsm в *.json", 
-               command=start_xls2json_win, width=40).pack(anchor=CENTER, pady=5)
-    ttk.Button(btn_frame, text="Исправление синтаксиса *.json", 
-               command=create_json_editor_window, width=40).pack(anchor=CENTER, pady=5)
-    ttk.Button(btn_frame, text="Справка", 
-               command=show_help, width=40).pack(anchor=CENTER, pady=5)
+    Button(btn_frame, text="Конвертировать *.xlsx/*.xlsm в *.json", 
+           command=start_xls2json_win, width=40).pack(anchor=CENTER, pady=5)
+    Button(btn_frame, text="Исправление синтаксиса *.json", 
+           command=create_json_editor_window, width=40).pack(anchor=CENTER, pady=5)
+    Button(btn_frame, text="Справка", 
+           command=show_help, width=40).pack(anchor=CENTER, pady=5)
+    
+    # Чекбокс для переключения темы
+    theme_frame = Frame(ask_window)
+    theme_frame.pack(pady=5)
+    
+    theme_var = BooleanVar(value=dark_theme_enabled)
+    
+    def toggle_theme():
+        global dark_theme_enabled
+        dark_theme_enabled = theme_var.get()
+        apply_theme(ask_window, dark_theme_enabled)
+    
+    theme_checkbox = Checkbutton(theme_frame, text="Темная тема", 
+                                 command=toggle_theme, 
+                                 variable=theme_var)
+    theme_checkbox.pack()
+    
+    # Применяем тему после создания всех виджетов
+    apply_theme(ask_window, dark_theme_enabled)
     
     # Горячие клавиши для быстрого доступа
     ask_window.bind('<Control-1>', lambda e: start_xls2json_win())

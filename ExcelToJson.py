@@ -18,6 +18,7 @@ status_label = None
 editor_win = None
 converter_win = None
 dark_theme_enabled = False  # Глобальная переменная для темы
+cyrillic_highlight_enabled = False  # Состояние подсветки кириллицы
 
 
 def get_windows_theme():
@@ -581,7 +582,7 @@ def validate_json(editor):
         status_label.config(text=f"⚠️ Ошибка: {ex}", fg="orange")
 
 def load_file_into_editor(filepath, editor):
-    global current_file_path
+    global current_file_path, cyrillic_highlight_enabled
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -590,6 +591,9 @@ def load_file_into_editor(filepath, editor):
         current_file_path = filepath
         update_line_numbers()  # Обновляем номера строк
         highlight_json_syntax()  # Подсвечиваем синтаксис
+        # Восстанавливаем подсветку кириллицы, если она была включена
+        if cyrillic_highlight_enabled:
+            apply_cyrillic_highlight()
         validate_json(editor)
     except Exception as e:
         messagebox.showerror("Ошибка", f"Не удалось загрузить файл:\n{e}")
@@ -702,9 +706,12 @@ def on_text_change(event=None):
     update_line_numbers()
     # Вызываем подсветку с небольшой задержкой, чтобы не замедлять ввод
     try:
-        global editor_win
+        global editor_win, cyrillic_highlight_enabled
         if editor_win:
             editor_win.after(10, highlight_json_syntax)
+            # Если подсветка кириллицы включена, обновляем её тоже
+            if cyrillic_highlight_enabled:
+                editor_win.after(15, highlight_cyrillic)
     except:
         pass
 
@@ -732,6 +739,58 @@ def toggle_word_wrap():
         text_widget.config(wrap=NONE)
     update_line_numbers()
 
+def apply_cyrillic_highlight():
+    """Применяет подсветку кириллических символов (без переключения состояния)"""
+    global text_widget, dark_theme_enabled, cyrillic_highlight_enabled
+    if not text_widget or not cyrillic_highlight_enabled:
+        return
+    
+    import re
+    
+    # Удаляем предыдущую подсветку кириллицы
+    text_widget.tag_remove("cyrillic", "1.0", END)
+    
+    # Получаем весь текст
+    content = text_widget.get("1.0", END)
+    if not content.strip():
+        return
+    
+    # Цвета для подсветки кириллицы
+    if dark_theme_enabled:
+        cyrillic_bg = "#3a3a00"  # Темно-желтый фон для темной темы
+        cyrillic_fg = "#ffff00"  # Ярко-желтый текст для темной темы
+    else:
+        cyrillic_bg = "#ffff00"  # Ярко-желтый фон для светлой темы
+        cyrillic_fg = "#000000"  # Черный текст для светлой темы
+    
+    # Настраиваем тег для кириллицы
+    text_widget.tag_configure("cyrillic", background=cyrillic_bg, foreground=cyrillic_fg)
+    
+    # Паттерн для поиска кириллических символов (основной блок + расширенный)
+    # Кириллица: U+0400-U+04FF (основной блок) и другие связанные блоки
+    cyrillic_pattern = r'[\u0400-\u04FF\u0500-\u052F\u2DE0-\u2DFF\uA640-\uA69F]'
+    
+    # Находим и подсвечиваем все кириллические символы
+    for match in re.finditer(cyrillic_pattern, content):
+        start_pos = f"1.0 + {match.start()} chars"
+        end_pos = f"1.0 + {match.end()} chars"
+        text_widget.tag_add("cyrillic", start_pos, end_pos)
+
+def highlight_cyrillic():
+    """Переключает подсветку кириллических символов в тексте"""
+    global text_widget, dark_theme_enabled, cyrillic_highlight_enabled
+    if not text_widget:
+        return
+    
+    # Переключаем состояние подсветки
+    cyrillic_highlight_enabled = not cyrillic_highlight_enabled
+    
+    if cyrillic_highlight_enabled:
+        apply_cyrillic_highlight()
+    else:
+        # Удаляем подсветку
+        text_widget.tag_remove("cyrillic", "1.0", END)
+
 def highlight_json_syntax():
     """Подсвечивает синтаксис JSON как в Notepad++"""
     global text_widget, dark_theme_enabled
@@ -749,6 +808,11 @@ def highlight_json_syntax():
     text_widget.tag_remove("json_bracket", "1.0", END)
     text_widget.tag_remove("json_colon", "1.0", END)
     text_widget.tag_remove("json_comma", "1.0", END)
+    
+    # Восстанавливаем подсветку кириллицы, если она была включена
+    global cyrillic_highlight_enabled
+    if cyrillic_highlight_enabled:
+        apply_cyrillic_highlight()
     
     # Получаем весь текст
     content = text_widget.get("1.0", END)
@@ -856,11 +920,14 @@ def highlight_json_syntax():
             text_widget.tag_add("json_null", start_pos, end_pos)
 
 def create_json_editor_window():
-    global ask_window, text_widget, line_numbers_widget, status_label, editor_win, dark_theme_enabled, word_wrap_var
+    global ask_window, text_widget, line_numbers_widget, status_label, editor_win, dark_theme_enabled, word_wrap_var, cyrillic_highlight_enabled
     
     if ask_window:
         ask_window.destroy()
         ask_window = None
+    
+    # Сбрасываем состояние подсветки кириллицы при открытии нового редактора
+    cyrillic_highlight_enabled = False
 
     editor_win = Tk()
     editor_win.title("JSON Редактор с проверкой")
@@ -885,6 +952,9 @@ def create_json_editor_window():
     word_wrap_var = BooleanVar(value=False)
     Checkbutton(btn_frame, text="Перенос строк", variable=word_wrap_var, 
                 command=toggle_word_wrap).pack(side=LEFT, padx=5)
+    
+    # Кнопка для подсветки кириллицы
+    Button(btn_frame, text="Подсветить кириллицу", command=highlight_cyrillic).pack(side=LEFT, padx=5)
     
     Button(btn_frame, text="Справка", command=show_help).pack(side=RIGHT, padx=5)
     Button(btn_frame, text="Назад", command=lambda: go_back_to_main(editor_win)).pack(side=RIGHT, padx=5)

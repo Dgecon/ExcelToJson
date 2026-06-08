@@ -135,9 +135,7 @@ auto-py-to-exe
 
 ## Автор
 
-Подпорин Н. Ю.
 - dgecon17@gmail.com
-- n.podporin@credos.ru
 
 ## Версия
 
